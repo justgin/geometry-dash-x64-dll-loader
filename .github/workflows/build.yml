@@ -1,0 +1,51 @@
+name: Build XInput1_4 loader
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CE64_INCL: ${{ github.workspace }}/sdk/CURLY-EUREKA-INCL.cmake
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout loader
+        uses: actions/checkout@v4
+        with:
+          path: loader
+
+      - name: Checkout curly-eureka SDK
+        uses: actions/checkout@v4
+        with:
+          repository: lil2kki/curly-eureka-x64
+          path: sdk
+          fetch-depth: 1
+
+      - name: Configure
+        working-directory: loader
+        run: cmake -B build -A x64
+
+      - name: Build
+        working-directory: loader
+        run: cmake --build build --config Release
+
+      - name: Verify exports and imports
+        working-directory: loader
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter XInput1_4.dll | Select-Object -First 1
+          Write-Host "Artifact: $($dll.FullName)"
+          & dumpbin /exports $dll.FullName | Select-String 'XInput'
+          & dumpbin /imports $dll.FullName | Select-String 'DLL Name'
+          Get-FileHash $dll.FullName -Algorithm SHA256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XInput1_4
+          path: loader/XInput1_4.dll
+          if-no-files-found: error
