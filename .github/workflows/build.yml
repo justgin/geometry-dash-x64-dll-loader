@@ -24,6 +24,8 @@ jobs:
           repository: lil2kki/curly-eureka-x64
           path: sdk
           fetch-depth: 1
+          # Pin once reviewed:
+          # ref: c747afcddca09e20441a479862edc13757786c85
 
       - name: Configure
         working-directory: loader
@@ -33,19 +35,50 @@ jobs:
         working-directory: loader
         run: cmake --build build --config Release
 
-      - name: Verify exports and imports
+      - name: Locate build output and check it is not the shipped binary
         working-directory: loader
         shell: pwsh
         run: |
-          $dll = Get-ChildItem -Recurse -Filter XInput1_4.dll | Select-Object -First 1
-          Write-Host "Artifact: $($dll.FullName)"
-          & dumpbin /exports $dll.FullName | Select-String 'XInput'
-          & dumpbin /imports $dll.FullName | Select-String 'DLL Name'
-          Get-FileHash $dll.FullName -Algorithm SHA256
+          $built = "Release/XInput1_4.dll"
+          if (-not (Test-Path $built)) {
+            throw "Build produced no DLL at $built"
+          }
+          $builtHash = (Get-FileHash $built -Algorithm SHA256).Hash
+          $builtSize = (Get-Item $built).Length
+          Write-Host "Built : $built  ($builtSize bytes)  $builtHash"
+
+          $vendored = "XInput1_4.dll"
+          if (Test-Path $vendored) {
+            $vendoredHash = (Get-FileHash $vendored -Algorithm SHA256).Hash
+            Write-Host "Vendored (checked-in): $vendoredHash"
+            if ($builtHash -eq $vendoredHash) {
+              throw "Build is byte-identical to the checked-in binary - you are about to ship the prebuilt, not your source."
+            }
+          }
+          "SHA256=$builtHash" | Out-File -Encoding ascii XInput1_4.dll.sha256
+
+      - name: Verify exports/imports (optional, never fails the job)
+        working-directory: loader
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { Write-Warning "vswhere not found"; exit 0 }
+          $vsRoot = & $vswhere -latest -products * -property installationPath
+          $dumpbin = Get-ChildItem -Path $vsRoot -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match 'Hostx64\\x64' } |
+                     Select-Object -First 1
+          if (-not $dumpbin) { Write-Warning "dumpbin not found under $vsRoot"; exit 0 }
+          Write-Host "Using $($dumpbin.FullName)"
+          & $dumpbin.FullName /exports Release/XInput1_4.dll | Select-String 'XInput'
+          & $dumpbin.FullName /imports Release/XInput1_4.dll | Select-String 'DLL Name'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XInput1_4
-          path: loader/XInput1_4.dll
+          name: XInput1_4-${{ github.sha }}
+          path: |
+            loader/Release/XInput1_4.dll
+            loader/XInput1_4.dll.sha256
           if-no-files-found: error
+          retention-days: 30
